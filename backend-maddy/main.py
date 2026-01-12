@@ -1,18 +1,19 @@
 """
 HeartChain Backend API
 
-A blockchain-based crowdfunding platform with application-level encryption
-for sensitive data and IPFS document storage.
+A blockchain-based crowdfunding platform.
+- Source of Truth: Shardeum Blockchain
+- Storage: IPFS
+- Backend: Stateless coordinator
 """
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import connect_to_mongo, close_mongo_connection, db
 from routes.campaigns import router as campaign_router
-from routes.donations import router as donation_router
-from routes.impact import router as impact_router
-from routes.badges import router as badge_router
+# from routes.donations import router as donation_router
+# from routes.impact import router as impact_router
+# from routes.badges import router as badge_router
 from routes.admin import router as admin_router
 from routes.documents import router as documents_router
 
@@ -20,37 +21,29 @@ from routes.documents import router as documents_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
-    await connect_to_mongo()
+    # No database connection needed!
+    print("HeartChain Backend (Stateless) Starting...")
     yield
-    await close_mongo_connection()
+    print("HeartChain Backend (Stateless) Shutdown.")
 
 
 app = FastAPI(
     title="HeartChain API",
     description="""
-## HeartChain - Blockchain Crowdfunding Platform
+## HeartChain - Decentralized & Stateless API
 
-A secure, transparent crowdfunding platform with:
-- **Two campaign types**: Individual (personal emergencies) and Charity (NGO/organizations)
-- **Application-level encryption**: Sensitive data encrypted with AES-256-GCM before storage
-- **IPFS document storage**: Supporting documents encrypted and stored on IPFS
-- **Admin verification workflow**: All campaigns verified before going live
-- **Blockchain integration**: Transaction hashes recorded for transparency
-
-### Security Features
-- Sensitive PII fields encrypted in MongoDB
-- Documents encrypted before IPFS upload
-- Admin-only access to decrypted data
-- Full audit logging for compliance
+- **Blockchain**: Shardeum (EVM)
+- **Storage**: IPFS (Metadata & Documents)
+- **Privacy**: AES-256 Encryption for sensitive data in IPFS JSON
     """,
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan
 )
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Restrict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,10 +51,11 @@ app.add_middleware(
 
 # Include routers
 app.include_router(campaign_router)
-app.include_router(donation_router)
-app.include_router(impact_router)
-app.include_router(badge_router)
+# app.include_router(donation_router)
+# app.include_router(impact_router)
+# app.include_router(badge_router)
 app.include_router(admin_router)
+# Documents router might need refactoring too, but we keep it for now as it handles IPFS upload logic
 app.include_router(documents_router)
 
 
@@ -69,10 +63,10 @@ app.include_router(documents_router)
 def read_root():
     """Root endpoint."""
     return {
-        "app": "HeartChain API",
-        "version": "2.0.0",
+        "app": "HeartChain API (Decentralized)",
+        "version": "3.0.0",
         "status": "running",
-        "docs": "/docs"
+        "mode": "stateless"
     }
 
 
@@ -80,34 +74,9 @@ def read_root():
 async def health_check():
     """
     Health check endpoint.
-    
-    Verifies database connectivity and encryption configuration.
+    Verifies simple connectivity.
     """
-    from core.config import settings
-    
-    health = {
+    return {
         "status": "ok",
-        "database": "unknown",
-        "encryption": "unknown"
+        "database": "removed (stateless)",
     }
-    
-    # Check database
-    try:
-        await db.client.admin.command('ping')
-        health["database"] = "connected"
-    except Exception as e:
-        health["status"] = "degraded"
-        health["database"] = f"disconnected: {str(e)}"
-    
-    # Check encryption key
-    if settings.ENCRYPTION_KEY:
-        if len(settings.ENCRYPTION_KEY) == 64:  # 32 bytes = 64 hex chars
-            health["encryption"] = "configured"
-        else:
-            health["status"] = "degraded"
-            health["encryption"] = "invalid key length"
-    else:
-        health["status"] = "degraded"
-        health["encryption"] = "not configured"
-    
-    return health

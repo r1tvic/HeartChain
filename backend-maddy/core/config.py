@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     # Admin
     ADMIN_PASSWORD: str = "secret"
     
+    # Blockchain
+    SHARDEUM_RPC_URL: str = "https://liberty10.shardeum.org/" # Example Testnet
+    CONTRACT_ADDRESS: str = "0x0000000000000000000000000000000000000000" # TO BE DEPLOYED
+    ADMIN_PRIVATE_KEY: str = "0x0000000000000000000000000000000000000000000000000000000000000000" # Placeholder
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

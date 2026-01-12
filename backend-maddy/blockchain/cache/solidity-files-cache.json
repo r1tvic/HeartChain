@@ -1,0 +1,40 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "C:\\Users\\madha\\OneDrive\\Documents\\GitHub\\HeartChain\\backend-maddy\\blockchain\\contracts\\HeartChain.sol": {
+      "lastModificationDate": 1768252178374,
+      "contentHash": "03e4f2e3f45be1bfa742747d3628c8b5",
+      "sourceName": "contracts/HeartChain.sol",
+      "solcConfig": {
+        "version": "0.8.19",
+        "settings": {
+          "optimizer": {
+            "enabled": false,
+            "runs": 200
+          },
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.0"
+      ],
+      "artifacts": [
+        "HeartChain"
+      ]
+    }
+  }
+}

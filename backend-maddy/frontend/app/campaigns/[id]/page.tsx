@@ -17,8 +17,12 @@ interface PageProps {
 
 // Convert API response to frontend Campaign format
 function apiToFrontendCampaign(apiCampaign: CampaignPublicResponse): Campaign {
+    const endDate = apiCampaign.end_date
+        ? new Date(apiCampaign.end_date)
+        : new Date(new Date(apiCampaign.created_at).getTime() + apiCampaign.duration_days * 86400000);
+
     const daysLeft = Math.max(0, Math.ceil(
-        (new Date(apiCampaign.end_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+        (endDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
     ));
 
     // Map API category to frontend category
@@ -46,7 +50,7 @@ function apiToFrontendCampaign(apiCampaign: CampaignPublicResponse): Campaign {
         contributors: Math.floor(apiCampaign.raised_amount / 50), // Estimate
         creatorName: apiCampaign.organization_name || 'Campaign Creator',
         creatorAvatar: '/avatars/default.jpg',
-        isVerified: apiCampaign.status === 'approved' || apiCampaign.status === 'active',
+        isVerified: apiCampaign.status === 'active',
         isHighPriority: apiCampaign.priority === 'urgent',
         createdAt: apiCampaign.created_at,
         updates: [],
@@ -68,7 +72,6 @@ export default function CampaignDetailPage({ params }: PageProps) {
     const [error, setError] = useState<string | null>(null);
     const [isDonationModalOpen, setIsDonationModalOpen] = useState(false);
     const [activeTab, setActiveTab] = useState<'story' | 'updates' | 'donors'>('story');
-    const [isSubmitting, setIsSubmitting] = useState(false);
 
     useEffect(() => {
         async function fetchCampaign() {
@@ -78,6 +81,8 @@ export default function CampaignDetailPage({ params }: PageProps) {
             try {
                 // Try to fetch from backend first
                 const response = await api.getCampaign(id);
+                if (!response) throw new Error('Campaign not found');
+
                 setApiCampaign(response);
                 setCampaign(apiToFrontendCampaign(response));
             } catch (err) {
@@ -96,21 +101,6 @@ export default function CampaignDetailPage({ params }: PageProps) {
 
         fetchCampaign();
     }, [id]);
-
-    const handleSubmitForVerification = async () => {
-        if (!apiCampaign) return;
-
-        setIsSubmitting(true);
-        try {
-            const updated = await api.submitForVerification(id);
-            setApiCampaign(updated);
-            setCampaign(apiToFrontendCampaign(updated));
-        } catch (err) {
-            alert(err instanceof Error ? err.message : 'Failed to submit');
-        } finally {
-            setIsSubmitting(false);
-        }
-    };
 
     if (isLoading) {
         return (
@@ -209,13 +199,11 @@ export default function CampaignDetailPage({ params }: PageProps) {
                                 </div>
                                 {/* Status Badge */}
                                 {apiCampaign && (
-                                    <div className={`absolute top-4 right-4 px-3 py-1.5 rounded-full text-sm font-medium ${apiCampaign.status === 'draft' ? 'bg-gray-500 text-white' :
-                                        apiCampaign.status === 'pending_verification' ? 'bg-amber-500 text-white' :
-                                            apiCampaign.status === 'approved' ? 'bg-blue-500 text-white' :
-                                                apiCampaign.status === 'active' ? 'bg-[var(--success)] text-white' :
-                                                    'bg-gray-500 text-white'
+                                    <div className={`absolute top-4 right-4 px-3 py-1.5 rounded-full text-sm font-medium ${apiCampaign.status === 'active' ? 'bg-[var(--success)] text-white' :
+                                            apiCampaign.status === 'completed' ? 'bg-blue-500 text-white' :
+                                                'bg-gray-500 text-white'
                                         }`}>
-                                        {apiCampaign.status.replace('_', ' ').toUpperCase()}
+                                        {apiCampaign.status.toUpperCase()}
                                     </div>
                                 )}
                             </div>
@@ -252,17 +240,6 @@ export default function CampaignDetailPage({ params }: PageProps) {
                                     <p className="text-xs text-[var(--text-secondary)]">Funded</p>
                                 </div>
                             </div>
-
-                            {/* Submit for Verification Button (for draft campaigns) */}
-                            {apiCampaign?.status === 'draft' && (
-                                <button
-                                    onClick={handleSubmitForVerification}
-                                    disabled={isSubmitting}
-                                    className="w-full py-3 bg-blue-600 text-white font-medium rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                                >
-                                    {isSubmitting ? 'Submitting...' : '📋 Submit for Verification'}
-                                </button>
-                            )}
                         </motion.div>
 
                         {/* Right Column - Heart & Donation */}
@@ -466,7 +443,7 @@ export default function CampaignDetailPage({ params }: PageProps) {
                                     {apiCampaign && (
                                         <div className="flex justify-between">
                                             <span className="text-[var(--text-secondary)]">Documents</span>
-                                            <span className="font-medium text-[var(--text-primary)]">{apiCampaign.documents_count} file(s)</span>
+                                            <span className="font-medium text-[var(--text-primary)]">{apiCampaign.documents_count || 0} file(s)</span>
                                         </div>
                                     )}
                                 </div>

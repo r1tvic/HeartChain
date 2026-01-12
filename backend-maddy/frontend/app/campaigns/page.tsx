@@ -19,8 +19,12 @@ const sortOptions: { value: SortOption; label: string }[] = [
 
 // Convert API response to frontend Campaign format
 function apiToFrontendCampaign(apiCampaign: CampaignPublicResponse): Campaign {
+    const endDate = apiCampaign.end_date
+        ? new Date(apiCampaign.end_date)
+        : new Date(new Date(apiCampaign.created_at).getTime() + apiCampaign.duration_days * 86400000);
+
     const daysLeft = Math.max(0, Math.ceil(
-        (new Date(apiCampaign.end_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+        (endDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
     ));
 
     return {
@@ -36,7 +40,7 @@ function apiToFrontendCampaign(apiCampaign: CampaignPublicResponse): Campaign {
         contributors: Math.floor(apiCampaign.raised_amount / 50), // Estimate
         creatorName: apiCampaign.organization_name || 'Campaign Creator',
         creatorAvatar: '/avatars/default.jpg',
-        isVerified: apiCampaign.status === 'approved' || apiCampaign.status === 'active',
+        isVerified: apiCampaign.status === 'active',
         isHighPriority: apiCampaign.priority === 'urgent',
         createdAt: apiCampaign.created_at,
         updates: [],

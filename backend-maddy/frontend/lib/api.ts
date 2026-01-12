@@ -1,21 +1,15 @@
 /**
- * API Service for HeartChain Frontend
- * Handles all communication with the backend
+ * API Service for HeartChain Frontend (Decentralized / Stateless)
  */
 
-// Backend API URL - configurable via environment variable
+// Backend API URL
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-// Campaign Types
+// Types
 export type CampaignType = 'individual' | 'charity';
-
-// Campaign Status
-export type CampaignStatus = 'draft' | 'pending_verification' | 'approved' | 'active' | 'closed' | 'rejected';
-
-// Priority Level
 export type PriorityLevel = 'urgent' | 'normal';
+export type CampaignStatus = 'active' | 'completed'; // Simplifed status
 
-// Document Types
 export type DocumentType =
     | 'medical_bill'
     | 'doctor_prescription'
@@ -26,7 +20,13 @@ export type DocumentType =
     | 'trust_deed'
     | 'other';
 
-// ============== REQUEST TYPES ==============
+export interface CampaignDocument {
+    ipfs_hash: string;
+    document_type: DocumentType;
+    filename: string;
+    mime_type: string;
+    uploaded_at?: string;
+}
 
 export interface IndividualCampaignCreateRequest {
     title: string;
@@ -40,6 +40,7 @@ export interface IndividualCampaignCreateRequest {
     phone_number: string;
     residential_address: string;
     verification_notes?: string;
+    documents?: CampaignDocument[];
 }
 
 export interface CharityCampaignCreateRequest {
@@ -55,13 +56,20 @@ export interface CharityCampaignCreateRequest {
     contact_phone_number: string;
     official_address: string;
     verification_notes?: string;
+    documents?: CampaignDocument[];
 }
 
-// ============== RESPONSE TYPES ==============
+export interface CreateResponse {
+    tx_hash: string;
+    cid: string;
+    status: string;
+}
 
-export interface CampaignPublicResponse {
-    _id: string;
-    id: string;  // Added for frontend compatibility
+// Frontend Representation of a Campaign (Stored in LocalStorage for MVP)
+export interface MockCampaign {
+    id: string; // CID
+    _id?: string; // Backwards compatibility
+    cid: string;
     campaign_type: CampaignType;
     title: string;
     description: string;
@@ -72,19 +80,16 @@ export interface CampaignPublicResponse {
     priority: PriorityLevel;
     status: CampaignStatus;
     image_url: string | null;
-    organization_name: string | null;
-    documents_count: number;
+    organization_name?: string | null;
     created_at: string;
-    end_date: string;
+    end_date?: string; // Derived
     blockchain_tx_hash: string | null;
-    on_chain_id: string | null;  // Placeholder for future smart contract integration
+    on_chain_id?: string | null;
+    documents_count?: number;
 }
 
-export interface ApiError {
-    detail: string;
-}
+export type CampaignPublicResponse = MockCampaign;
 
-// ============== API CLIENT ==============
 
 class ApiClient {
     private baseUrl: string;
@@ -93,140 +98,139 @@ class ApiClient {
         this.baseUrl = baseUrl;
     }
 
-    private async request<T>(
-        endpoint: string,
-        options: RequestInit = {}
-    ): Promise<T> {
+    private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
         const url = `${this.baseUrl}${endpoint}`;
-
-        const defaultHeaders: Record<string, string> = {
-            'Content-Type': 'application/json',
-        };
+        const defaultHeaders = { 'Content-Type': 'application/json' };
 
         const response = await fetch(url, {
             ...options,
-            headers: {
-                ...defaultHeaders,
-                ...options.headers,
-            },
+            headers: { ...defaultHeaders, ...options.headers },
         });
 
         if (!response.ok) {
             const error = await response.json().catch(() => ({ detail: 'An error occurred' }));
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
-
         return response.json();
     }
 
-    // ============== CAMPAIGN ENDPOINTS ==============
+    // Helper to save campaign to LocalStorage (Simulating Blockchain Indexer)
+    private saveToLocalIndex(campaign: MockCampaign) {
+        if (typeof window !== 'undefined') {
+            const existing = JSON.parse(localStorage.getItem('heartchain_campaigns') || '[]');
+            existing.unshift(campaign); // Add to top
+            localStorage.setItem('heartchain_campaigns', JSON.stringify(existing));
+        }
+    }
 
-    /**
-     * Create an individual/personal campaign
-     */
-    async createIndividualCampaign(data: IndividualCampaignCreateRequest): Promise<CampaignPublicResponse> {
-        return this.request<CampaignPublicResponse>('/campaigns/individual', {
+    // ============== CREATE ==============
+
+    async createIndividualCampaign(data: IndividualCampaignCreateRequest): Promise<CreateResponse> {
+        const res = await this.request<CreateResponse>('/campaigns/individual', {
             method: 'POST',
             body: JSON.stringify(data),
         });
+
+        // Save to mock storage so it appears in Browse
+        this.saveToLocalIndex({
+            id: res.cid,
+            cid: res.cid,
+            campaign_type: 'individual',
+            title: data.title,
+            description: data.description,
+            target_amount: data.target_amount,
+            raised_amount: 0,
+            duration_days: data.duration_days,
+            category: data.category,
+            priority: data.priority || 'normal',
+            status: 'active',
+            image_url: data.image_url || null,
+            created_at: new Date().toISOString(),
+            blockchain_tx_hash: res.tx_hash
+        });
+
+        return res;
     }
 
-    /**
-     * Create a charity/organization campaign
-     */
-    async createCharityCampaign(data: CharityCampaignCreateRequest): Promise<CampaignPublicResponse> {
-        return this.request<CampaignPublicResponse>('/campaigns/charity', {
+    async createCharityCampaign(data: CharityCampaignCreateRequest): Promise<CreateResponse> {
+        const res = await this.request<CreateResponse>('/campaigns/charity', {
             method: 'POST',
             body: JSON.stringify(data),
         });
-    }
 
-    /**
-     * Get all active campaigns
-     */
-    async getCampaigns(params?: {
-        campaign_type?: CampaignType;
-        category?: string;
-        limit?: number;
-    }): Promise<CampaignPublicResponse[]> {
-        const searchParams = new URLSearchParams();
-        if (params?.campaign_type) searchParams.set('campaign_type', params.campaign_type);
-        if (params?.category) searchParams.set('category', params.category);
-        if (params?.limit) searchParams.set('limit', params.limit.toString());
-
-        const query = searchParams.toString();
-        return this.request<CampaignPublicResponse[]>(`/campaigns/${query ? `?${query}` : ''}`);
-    }
-
-    /**
-     * Get a single campaign by ID
-     */
-    async getCampaign(campaignId: string): Promise<CampaignPublicResponse> {
-        return this.request<CampaignPublicResponse>(`/campaigns/${campaignId}`);
-    }
-
-    /**
-     * Submit a campaign for verification
-     */
-    async submitForVerification(campaignId: string): Promise<CampaignPublicResponse> {
-        return this.request<CampaignPublicResponse>(`/campaigns/${campaignId}/submit`, {
-            method: 'POST',
+        this.saveToLocalIndex({
+            id: res.cid,
+            cid: res.cid,
+            campaign_type: 'charity',
+            title: data.title,
+            description: data.description,
+            target_amount: data.target_amount,
+            raised_amount: 0,
+            duration_days: data.duration_days,
+            category: data.category,
+            priority: data.priority || 'normal',
+            status: 'active',
+            image_url: data.image_url || null,
+            organization_name: data.organization_name,
+            created_at: new Date().toISOString(),
+            blockchain_tx_hash: res.tx_hash
         });
+
+        return res;
     }
 
-    /**
-     * Close an active campaign
-     */
-    async closeCampaign(campaignId: string, reason?: string): Promise<CampaignPublicResponse> {
-        const params = reason ? `?reason=${encodeURIComponent(reason)}` : '';
-        return this.request<CampaignPublicResponse>(`/campaigns/${campaignId}/close${params}`, {
-            method: 'PUT',
-        });
+    // ============== BROWSE (MOCK FETCH) ==============
+
+    async getCampaigns(params?: any): Promise<MockCampaign[]> {
+        // Return from LocalStorage instead of Backend API (which is removed)
+        if (typeof window !== 'undefined') {
+            let campaigns: MockCampaign[] = JSON.parse(localStorage.getItem('heartchain_campaigns') || '[]');
+            // Basic filtering logic
+            if (params?.campaign_type) {
+                campaigns = campaigns.filter(c => c.campaign_type === params.campaign_type);
+            }
+            if (params?.category) {
+                campaigns = campaigns.filter(c => c.category === params.category);
+            }
+            return campaigns;
+        }
+        return [];
     }
 
-    // ============== DOCUMENT ENDPOINTS ==============
+    async getCampaign(id: string): Promise<MockCampaign | null> {
+        if (typeof window !== 'undefined') {
+            const campaigns: MockCampaign[] = JSON.parse(localStorage.getItem('heartchain_campaigns') || '[]');
+            return campaigns.find(c => c.id === id) || null;
+        }
+        return null;
+    }
 
-    /**
-     * Upload a document for a campaign
-     */
-    async uploadDocument(
-        campaignId: string,
-        file: File,
-        documentType: DocumentType
-    ): Promise<{ ipfs_hash: string; filename: string }> {
+    // ============== DOCUMENTS ==============
+
+    async uploadDocument(file: File, documentType: DocumentType): Promise<CampaignDocument> {
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('document', file); // changed key from 'file' to 'document' if backend expects?
+        // Backend: document: UploadFile = File(...) -> field name 'document'
+        // Wait, backend `routes/documents.py`: `async def upload_document(document: UploadFile = File(...), ...)`
+        // Yes, field name is 'document'.
+
         formData.append('document_type', documentType);
 
-        const response = await fetch(`${this.baseUrl}/documents/${campaignId}/upload`, {
+        // Stateless endpoint: /documents/upload
+        const response = await fetch(`${this.baseUrl}/documents/upload`, {
             method: 'POST',
             body: formData,
         });
 
         if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
-            throw new Error(error.detail);
+            throw new Error('Upload failed');
         }
 
         return response.json();
     }
-
-    // ============== HEALTH CHECK ==============
-
-    /**
-     * Check API health status
-     */
-    async healthCheck(): Promise<{
-        status: string;
-        database: string;
-        encryption: string;
-    }> {
-        return this.request('/health');
-    }
 }
 
-// Export singleton instance
 export const api = new ApiClient(API_BASE_URL);
-
-// Export the base URL for reference
 export { API_BASE_URL };
+
+

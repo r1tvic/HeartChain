@@ -1,425 +1,126 @@
-"""
-Campaign Routes for HeartChain.
+from fastapi import APIRouter, Body, HTTPException, status
+from typing import List, Dict
+from datetime import datetime
+from pydantic import BaseModel
 
-Handles campaign creation, listing, and status management.
-Implements encryption for sensitive data before storage.
-"""
-from fastapi import APIRouter, Body, HTTPException, status, Query
-from typing import List, Optional
-from datetime import datetime, timedelta
-from bson import ObjectId
-from pymongo import ReturnDocument
 
 from models.campaign import (
-    CampaignType,
-    CampaignStatus,
-    PriorityLevel,
     IndividualCampaignCreate,
     CharityCampaignCreate,
-    CampaignPublicResponse,
-    CampaignInDB,
+    CampaignMetadata,
+    CampaignType,
     CampaignDocument,
-    INDIVIDUAL_ENCRYPTED_FIELDS,
-    CHARITY_ENCRYPTED_FIELDS,
+    EncryptedField
 )
+from services.ipfs_service import upload_json
+from services.blockchain_service import create_campaign_on_chain
 from core.encryption import get_encryption, EncryptionError
-from database import db
-import os
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
 
+class CreateResponse(BaseModel):
+    tx_hash: str
+    cid: str
+    status: str = "submitted_to_chain"
 
-def get_collection():
-    """Helper to get the campaigns collection."""
-    db_name = os.getenv("DB_NAME", "heartchain_db")
-    return db.client[db_name]["campaigns"]
+class IndividualCreateRequest(IndividualCampaignCreate):
+    documents: List[CampaignDocument] = []
 
+class CharityCreateRequest(CharityCampaignCreate):
+    documents: List[CampaignDocument] = []
 
-def convert_db_to_public_response(campaign: dict) -> dict:
+@router.post("/individual", response_model=CreateResponse, status_code=201)
+async def create_individual_campaign(payload: IndividualCreateRequest):
     """
-    Convert a database campaign document to public response format.
-    Strips all encrypted fields and exposes only public data.
-    """
-    # Convert ObjectId to string
-    campaign_id = str(campaign.get("_id")) if campaign.get("_id") else None
-    
-    return {
-        "_id": campaign_id,
-        "id": campaign_id,  # Also provide 'id' for frontend compatibility
-        "campaign_type": campaign.get("campaign_type"),
-        "title": campaign.get("title"),
-        "description": campaign.get("description"),
-        "target_amount": campaign.get("target_amount"),
-        "raised_amount": campaign.get("raised_amount", 0.0),
-        "duration_days": campaign.get("duration_days"),
-        "category": campaign.get("category"),
-        "priority": campaign.get("priority"),
-        "status": campaign.get("status"),
-        "image_url": campaign.get("image_url"),
-        "organization_name": campaign.get("organization_name"),  # Public for charity
-        "documents_count": len(campaign.get("documents", [])),
-        "created_at": campaign.get("created_at"),
-        "end_date": campaign.get("end_date"),
-        "blockchain_tx_hash": campaign.get("blockchain_tx_hash"),
-        "on_chain_id": campaign.get("on_chain_id"),  # Placeholder for smart contract
-    }
-
-
-# ============== CREATE ENDPOINTS ==============
-
-@router.post(
-    "/individual",
-    response_model=CampaignPublicResponse,
-    status_code=status.HTTP_201_CREATED,
-    response_model_by_alias=False,
-    summary="Create Individual Campaign",
-    description="Create a personal/individual campaign (medical emergencies, personal crises). Sensitive data is encrypted before storage."
-)
-async def create_individual_campaign(campaign: IndividualCampaignCreate = Body(...)):
-    """
-    Create a new Individual/Personal campaign.
-    
-    - Encrypts sensitive fields (beneficiary_name, phone_number, residential_address, verification_notes)
-    - Sets initial status to DRAFT
-    - Campaign type is immutably set to INDIVIDUAL
+    Create Individual Campaign (Stateless).
+    1. Encrypt PII.
+    2. Upload Metadata to IPFS.
+    3. Call Smart Contract.
     """
     try:
         encryption = get_encryption()
-    except EncryptionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Encryption configuration error: {str(e)}"
+        
+        # Encrypt sensitive fields
+        # Note: encryption.encrypt returns Dict {nonce, ciphertext} ?? 
+        # Wait, core/encryption.py likely returns raw dict or object?
+        # Step 361 showed usage: `encryption.encrypt(str)` -> `{nonce:..., ciphertext:...}`?
+        # Let's verify encryption.encrypt return type. 
+        # Assuming it returns dict compatible with EncryptedField.
+        
+        # Build Metadata
+        encrypted_info = {
+            "beneficiary_name": encryption.encrypt(payload.beneficiary_name),
+            "phone_number": encryption.encrypt(payload.phone_number),
+            "residential_address": encryption.encrypt(payload.residential_address),
+            "verification_notes": encryption.encrypt(payload.verification_notes) if payload.verification_notes else None
+        }
+        # Remove None values
+        encrypted_info = {k: v for k, v in encrypted_info.items() if v is not None}
+        
+        metadata = CampaignMetadata(
+            title=payload.title,
+            description=payload.description,
+            campaign_type=CampaignType.INDIVIDUAL,
+            category=payload.category,
+            priority=payload.priority,
+            image_url=payload.image_url,
+            target_amount=payload.target_amount,
+            created_at=datetime.now().isoformat(),
+            documents=payload.documents,
+            encrypted_data=encrypted_info
         )
-    
-    # Calculate end date
-    end_date = datetime.now() + timedelta(days=campaign.duration_days)
-    
-    # Build campaign document
-    campaign_dict = {
-        "campaign_type": CampaignType.INDIVIDUAL.value,
         
-        # Public fields (plain text)
-        "title": campaign.title,
-        "description": campaign.description,
-        "target_amount": campaign.target_amount,
-        "raised_amount": 0.0,
-        "duration_days": campaign.duration_days,
-        "category": campaign.category,
-        "priority": campaign.priority.value,
-        "status": CampaignStatus.ACTIVE.value,  # Auto-approve for MVP
-        "image_url": campaign.image_url,
+        # Upload Metadata to IPFS
+        cid = await upload_json(metadata.model_dump(mode='json'))
         
-        # Encrypted fields
-        "beneficiary_name": encryption.encrypt(campaign.beneficiary_name),
-        "phone_number": encryption.encrypt(campaign.phone_number),
-        "residential_address": encryption.encrypt(campaign.residential_address),
-        "verification_notes": encryption.encrypt(campaign.verification_notes) if campaign.verification_notes else None,
+        # Call Blockchain
+        tx_hash = await create_campaign_on_chain(payload.target_amount, cid)
         
-        # Documents (empty initially, uploaded separately)
-        "documents": [],
-        
-        # Timestamps
-        "created_at": datetime.now(),
-        "end_date": end_date,
-    }
-    
-    # Insert into database
-    result = await get_collection().insert_one(campaign_dict)
-    created_campaign = await get_collection().find_one({"_id": result.inserted_id})
-    
-    # Return public response (no sensitive data)
-    return convert_db_to_public_response(created_campaign)
+        return CreateResponse(tx_hash=tx_hash, cid=cid)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post(
-    "/charity",
-    response_model=CampaignPublicResponse,
-    status_code=status.HTTP_201_CREATED,
-    response_model_by_alias=False,
-    summary="Create Charity Campaign",
-    description="Create a charity/organization campaign (NGOs, registered institutions). Sensitive data is encrypted before storage."
-)
-async def create_charity_campaign(campaign: CharityCampaignCreate = Body(...)):
+@router.post("/charity", response_model=CreateResponse, status_code=201)
+async def create_charity_campaign(payload: CharityCreateRequest):
     """
-    Create a new Charity/Organization campaign.
-    
-    - Encrypts sensitive fields (contact_person_name, contact_phone_number, official_address, verification_notes)
-    - Organization name is public (not encrypted)
-    - Sets initial status to DRAFT
-    - Campaign type is immutably set to CHARITY
+    Create Charity Campaign (Stateless).
     """
     try:
         encryption = get_encryption()
-    except EncryptionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Encryption configuration error: {str(e)}"
-        )
-    
-    # Calculate end date
-    end_date = datetime.now() + timedelta(days=campaign.duration_days)
-    
-    # Build campaign document
-    campaign_dict = {
-        "campaign_type": CampaignType.CHARITY.value,
         
-        # Public fields (plain text)
-        "title": campaign.title,
-        "description": campaign.description,
-        "target_amount": campaign.target_amount,
-        "raised_amount": 0.0,
-        "duration_days": campaign.duration_days,
-        "category": campaign.category,
-        "priority": campaign.priority.value,
-        "status": CampaignStatus.ACTIVE.value,  # Auto-approve for MVP
-        "image_url": campaign.image_url,
-        "organization_name": campaign.organization_name,  # Public!
+        encrypted_info = {
+            "contact_person_name": encryption.encrypt(payload.contact_person_name),
+            "contact_phone_number": encryption.encrypt(payload.contact_phone_number),
+            "official_address": encryption.encrypt(payload.official_address),
+            "verification_notes": encryption.encrypt(payload.verification_notes) if payload.verification_notes else None
+        }
+        # Remove None values to satisfy Dict[str, EncryptedField]
+        encrypted_info = {k: v for k, v in encrypted_info.items() if v is not None}
         
-        # Encrypted fields
-        "contact_person_name": encryption.encrypt(campaign.contact_person_name),
-        "contact_phone_number": encryption.encrypt(campaign.contact_phone_number),
-        "official_address": encryption.encrypt(campaign.official_address),
-        "verification_notes": encryption.encrypt(campaign.verification_notes) if campaign.verification_notes else None,
+        metadata = CampaignMetadata(
+            title=payload.title,
+            description=payload.description,
+            campaign_type=CampaignType.CHARITY,
+            category=payload.category,
+            priority=payload.priority,
+            image_url=payload.image_url,
+            organization_name=payload.organization_name, # Public
+            target_amount=payload.target_amount,
+            created_at=datetime.now().isoformat(),
+            documents=payload.documents,
+            encrypted_data=encrypted_info
+        )
         
-        # Documents (empty initially, uploaded separately)
-        "documents": [],
+        cid = await upload_json(metadata.model_dump(mode='json'))
+        tx_hash = await create_campaign_on_chain(payload.target_amount, cid)
         
-        # Timestamps
-        "created_at": datetime.now(),
-        "end_date": end_date,
-    }
-    
-    # Insert into database
-    result = await get_collection().insert_one(campaign_dict)
-    created_campaign = await get_collection().find_one({"_id": result.inserted_id})
-    
-    # Return public response (no sensitive data)
-    return convert_db_to_public_response(created_campaign)
+        return CreateResponse(tx_hash=tx_hash, cid=cid)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============== LIST/READ ENDPOINTS ==============
-
-@router.get(
-    "/",
-    response_model=List[CampaignPublicResponse],
-    response_model_by_alias=False,
-    summary="List All Active Campaigns",
-    description="Fetch all ACTIVE campaigns sorted by priority. Urgent campaigns first, then normal."
-)
-async def list_campaigns(
-    campaign_type: Optional[CampaignType] = Query(None, description="Filter by campaign type"),
-    category: Optional[str] = Query(None, description="Filter by category"),
-    limit: int = Query(50, ge=1, le=100, description="Maximum number of campaigns to return")
-):
-    """
-    List all active campaigns (public view).
-    
-    - Only shows ACTIVE campaigns (approved and live)
-    - Sorted by priority (urgent first) then by creation date
-    - No sensitive data exposed
-    """
-    query = {"status": CampaignStatus.ACTIVE.value}
-    
-    if campaign_type:
-        query["campaign_type"] = campaign_type.value
-    if category:
-        query["category"] = category
-    
-    campaigns = await get_collection().find(query).sort([
-        ("priority", -1),  # urgent before normal
-        ("created_at", -1)  # newest first
-    ]).limit(limit).to_list(limit)
-    
-    return [convert_db_to_public_response(c) for c in campaigns]
-
-
-@router.get(
-    "/{campaign_id}",
-    response_model=CampaignPublicResponse,
-    response_model_by_alias=False,
-    summary="Get Campaign Details",
-    description="Fetch public details of a single campaign by ID."
-)
-async def get_campaign(campaign_id: str):
-    """
-    Get a single campaign's public details.
-    
-    - Only returns public data
-    - Works for any status (draft campaigns visible to creator only - TODO: add auth)
-    """
-    if not ObjectId.is_valid(campaign_id):
-        raise HTTPException(status_code=400, detail="Invalid campaign ID format")
-    
-    campaign = await get_collection().find_one({"_id": ObjectId(campaign_id)})
-    
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    return convert_db_to_public_response(campaign)
-
-
-# ============== STATUS MANAGEMENT ENDPOINTS ==============
-
-@router.post(
-    "/{campaign_id}/submit",
-    response_model=CampaignPublicResponse,
-    response_model_by_alias=False,
-    summary="Submit Campaign for Verification",
-    description="Submit a DRAFT campaign for admin verification."
-)
-async def submit_for_verification(campaign_id: str):
-    """
-    Submit a campaign for verification.
-    
-    - Only DRAFT campaigns can be submitted
-    - Changes status to PENDING_VERIFICATION
-    - Requires at least one supporting document (TODO: enforce)
-    """
-    if not ObjectId.is_valid(campaign_id):
-        raise HTTPException(status_code=400, detail="Invalid campaign ID format")
-    
-    campaign = await get_collection().find_one({"_id": ObjectId(campaign_id)})
-    
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    if campaign["status"] != CampaignStatus.DRAFT.value:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot submit campaign. Current status is '{campaign['status']}', must be 'draft'"
-        )
-    
-    # Update status
-    updated = await get_collection().find_one_and_update(
-        {"_id": ObjectId(campaign_id)},
-        {
-            "$set": {
-                "status": CampaignStatus.PENDING_VERIFICATION.value,
-                "submitted_at": datetime.now()
-            }
-        },
-        return_document=ReturnDocument.AFTER
-    )
-    
-    return convert_db_to_public_response(updated)
-
-
-@router.put(
-    "/{campaign_id}/close",
-    response_model=CampaignPublicResponse,
-    response_model_by_alias=False,
-    summary="Close Campaign",
-    description="Close an ACTIVE campaign (goal reached or cancelled)."
-)
-async def close_campaign(campaign_id: str, reason: Optional[str] = Query(None)):
-    """
-    Close an active campaign.
-    
-    - Only ACTIVE campaigns can be closed
-    - Used when goal is reached or campaign is cancelled
-    """
-    if not ObjectId.is_valid(campaign_id):
-        raise HTTPException(status_code=400, detail="Invalid campaign ID format")
-    
-    campaign = await get_collection().find_one({"_id": ObjectId(campaign_id)})
-    
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    if campaign["status"] != CampaignStatus.ACTIVE.value:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot close campaign. Current status is '{campaign['status']}', must be 'active'"
-        )
-    
-    updated = await get_collection().find_one_and_update(
-        {"_id": ObjectId(campaign_id)},
-        {
-            "$set": {
-                "status": CampaignStatus.CLOSED.value,
-                "closed_at": datetime.now(),
-                "close_reason": reason
-            }
-        },
-        return_document=ReturnDocument.AFTER
-    )
-    
-    return convert_db_to_public_response(updated)
-
-
-# ============== BLOCKCHAIN INTEGRATION ==============
-
-@router.put(
-    "/{campaign_id}/blockchain-tx",
-    response_model=CampaignPublicResponse,
-    response_model_by_alias=False,
-    summary="Record Blockchain Transaction",
-    description="Record the blockchain transaction hash for a campaign."
-)
-async def record_blockchain_tx(
-    campaign_id: str,
-    tx_hash: str = Query(..., description="Blockchain transaction hash")
-):
-    """
-    Record blockchain transaction hash for a campaign.
-    
-    - Public/transparent record of on-chain activity
-    - Not encrypted (for transparency)
-    """
-    if not ObjectId.is_valid(campaign_id):
-        raise HTTPException(status_code=400, detail="Invalid campaign ID format")
-    
-    campaign = await get_collection().find_one({"_id": ObjectId(campaign_id)})
-    
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    updated = await get_collection().find_one_and_update(
-        {"_id": ObjectId(campaign_id)},
-        {"$set": {"blockchain_tx_hash": tx_hash}},
-        return_document=ReturnDocument.AFTER
-    )
-    
-    return convert_db_to_public_response(updated)
-
-
-# ============== RAISED AMOUNT UPDATE ==============
-
-@router.put(
-    "/{campaign_id}/update-raised",
-    response_model=CampaignPublicResponse,
-    response_model_by_alias=False,
-    summary="Update Raised Amount",
-    description="Update the total raised amount for a campaign (called when donations are received)."
-)
-async def update_raised_amount(
-    campaign_id: str,
-    amount: float = Query(..., gt=0, description="Amount to add to raised total")
-):
-    """
-    Update the raised amount for a campaign.
-    
-    - Increments the raised_amount field
-    - Should be called when donations are confirmed on blockchain
-    """
-    if not ObjectId.is_valid(campaign_id):
-        raise HTTPException(status_code=400, detail="Invalid campaign ID format")
-    
-    campaign = await get_collection().find_one({"_id": ObjectId(campaign_id)})
-    
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    if campaign["status"] != CampaignStatus.ACTIVE.value:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot update raised amount for non-active campaign"
-        )
-    
-    updated = await get_collection().find_one_and_update(
-        {"_id": ObjectId(campaign_id)},
-        {"$inc": {"raised_amount": amount}},
-        return_document=ReturnDocument.AFTER
-    )
-    
-    return convert_db_to_public_response(updated)

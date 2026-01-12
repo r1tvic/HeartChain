@@ -189,12 +189,27 @@ export default function CreateCampaignPage() {
         setError(null);
 
         try {
+            // 1. Upload documents first to get CIDs
+            const uploadedDocs = [];
+            for (let i = 0; i < formData.documents.length; i++) {
+                const file = formData.documents[i];
+                const docType = formData.documentTypes[i] || 'other';
+                try {
+                    const docRes = await api.uploadDocument(file, docType);
+                    uploadedDocs.push(docRes);
+                } catch (err) {
+                    console.error('Document upload failed:', err);
+                    // Fail fast? Or continue? Let's fail fast for safety.
+                    throw new Error(`Failed to upload document: ${file.name}`);
+                }
+            }
+
             // Combine description with impact plan
             const fullDescription = formData.impactPlan
                 ? `${formData.description}\n\n---\n\n**How Funds Will Be Used:**\n${formData.impactPlan}`
                 : formData.description;
 
-            let campaign;
+            let response;
 
             if (formData.campaignType === 'individual') {
                 const payload: IndividualCampaignCreateRequest = {
@@ -208,8 +223,9 @@ export default function CreateCampaignPage() {
                     beneficiary_name: formData.beneficiaryName,
                     phone_number: formData.phoneNumber,
                     residential_address: formData.residentialAddress,
+                    documents: uploadedDocs
                 };
-                campaign = await api.createIndividualCampaign(payload);
+                response = await api.createIndividualCampaign(payload);
             } else {
                 const payload: CharityCampaignCreateRequest = {
                     title: formData.title,
@@ -223,26 +239,16 @@ export default function CreateCampaignPage() {
                     contact_person_name: formData.contactPersonName,
                     contact_phone_number: formData.contactPhoneNumber,
                     official_address: formData.officialAddress,
+                    documents: uploadedDocs
                 };
-                campaign = await api.createCharityCampaign(payload);
+                response = await api.createCharityCampaign(payload);
             }
 
-            setCreatedCampaignId(campaign.id);
+            setCreatedCampaignId(response.cid);
 
-            // Upload documents if any
-            for (let i = 0; i < formData.documents.length; i++) {
-                const file = formData.documents[i];
-                const docType = formData.documentTypes[i] || 'other';
-                try {
-                    await api.uploadDocument(campaign.id, file, docType);
-                } catch (err) {
-                    console.error('Document upload failed:', err);
-                    // Continue with other documents
-                }
-            }
-
-            // Redirect to success or campaign page
-            router.push(`/campaigns/${campaign.id}?created=true`);
+            // Redirect to success or browse page
+            // Using logic from api.ts, the campaign is now in local storage with ID = CID.
+            router.push(`/campaigns/${response.cid}?created=true&tx=${response.tx_hash}`);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to create campaign');
         } finally {
